@@ -6,16 +6,17 @@
 <title>日切放行</title>
 <script src="/static/vue.global.prod.js"></script>
 <style>
-  :root{--bg:#0b1220;--panel:#121a2b;--line:#243049;--text:#e8eefc;--muted:#93a0b8;--ok:#3ddc97;--bad:#ff6b6b;--accent:#4cc9f0}
+  :root{--bg:#0b1220;--panel:#121a2b;--line:#243049;--text:#e8eefc;--muted:#93a0b8;--ok:#3ddc97;--bad:#ff6b6b;--accent:#4cc9f0;--warn:#ffd166}
   *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
   .top{display:flex;align-items:center;gap:18px;padding:14px 20px;border-bottom:1px solid var(--line);background:#0e1626}
   .brand{font-weight:700;letter-spacing:.08em;font-size:18px}
   .brand small{display:block;color:var(--muted);font-weight:400;font-size:11px;letter-spacing:.02em;margin-top:2px}
-  .tabs{display:flex;gap:6px;flex:1}
+  .tabs{display:flex;gap:6px;flex:1;flex-wrap:wrap}
   .tabs button{background:transparent;border:1px solid transparent;color:var(--muted);padding:8px 12px;border-radius:999px;cursor:pointer}
   .tabs button.on{color:var(--text);border-color:var(--line);background:#18233a}
   .user{color:var(--muted);font-size:13px}
   .ghost{background:#18233a;border:1px solid var(--line);color:var(--text);padding:7px 10px;border-radius:8px;cursor:pointer}
+  .ghost:disabled{opacity:.4;cursor:not-allowed}
   main{padding:18px 20px 28px}
   .grid{display:grid;grid-template-columns:1.2fr .8fr;gap:14px}
   .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
@@ -26,13 +27,19 @@
   input,select{width:100%;background:#0b1220;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 10px;margin:4px 0 10px}
   .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
   .primary{background:var(--accent);color:#041018;border:0;padding:9px 12px;border-radius:8px;font-weight:700;cursor:pointer}
+  .primary:disabled{opacity:.4;cursor:not-allowed}
   .mono{font-family:Consolas,"Courier New",monospace}
   .tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:#1b2a22;color:var(--ok)}
   .tag.bad{background:#2a1518;color:var(--bad)}
+  .tag.warn{background:#2e2a17;color:var(--warn)}
+  .tag.noncred{background:#241f10;color:var(--warn);border:1px solid #4a3f1d}
   .login{max-width:400px;margin:12vh auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px}
-  .err{color:var(--bad);min-height:18px;font-size:13px}
-  .kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
+  .err{color:var(--bad);min-height:18px;font-size:13px;white-space:pre-wrap}
+  .kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
   .kpi .panel{padding:12px}.kpi b{display:block;font-size:22px;margin-top:4px}
+  .note{background:#1a2236;border:1px solid var(--line);border-left:3px solid var(--warn);border-radius:8px;padding:10px 12px;font-size:12.5px;color:#d6deef;line-height:1.6;margin-bottom:14px}
+  .side{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.6}
+  .rolechip{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:#18233a;border:1px solid var(--line);color:var(--accent);margin-left:8px}
 </style>
 </head>
 <body>
@@ -50,27 +57,36 @@ setTimeout(function () {
 
 <script>
 const {createApp,ref,onMounted,computed}=Vue;
+const NON_CREDENTIAL='非放行凭证';
+const FORMAL_CREDENTIAL='正式放行凭证';
 createApp({
   setup(){
     const token=ref(localStorage.getItem('slicegate_token')||'');
     const user=ref(localStorage.getItem('slicegate_user')||'');
+    const role=ref(localStorage.getItem('slicegate_role')||'');
     const username=ref('admin'), password=ref('123456'), err=ref(''), tab=ref(0), actionErr=ref('');
-    const slices=ref([]), releases=ref([]), watermarks=ref([]);
+    const slices=ref([]), releases=ref([]), watermarks=ref([]), requests=ref([]), perms=ref([]), contentions=ref([]);
+    const boundary=ref('');
     const form=ref({slice_no:'SL-2026-11-03-east',biz_date:'2026-11-03',partition_key:'east',row_count:1000,expected_count:1000});
-    const releaseSliceId=ref(1), consumer=ref('ads_order');
-    const nav=['切片登记','完整度裁决','下游放行','消费水位'];
+    const reqSliceId=ref(1), reqConsumer=ref('ads_order'), consumer=ref('ads_order');
+    const nav=['切片登记','完整度裁决','申请台','审批裁决','放行流水','消费水位','权限与导出'];
+    const isAdmin=computed(()=>role.value==='管理员');
     const completeCnt=computed(()=>slices.value.filter(s=>s.completeness==='完整').length);
     const openCnt=computed(()=>slices.value.filter(s=>s.release_status!=='已放行').length);
+    const pendingCnt=computed(()=>requests.value.filter(q=>q.status==='待审批').length);
     function auth(){return {Authorization:'Bearer '+token.value,'Content-Type':'application/json'};}
     async function login(){
       err.value='';
       const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username.value,password:password.value})});
       const j=await r.json(); if(!r.ok){err.value=j.detail||'登录失败';return;}
-      token.value=j.token; user.value=j.username;
-      localStorage.setItem('slicegate_token',j.token); localStorage.setItem('slicegate_user',j.username);
+      token.value=j.token; user.value=j.username; role.value=j.role;
+      localStorage.setItem('slicegate_token',j.token);
+      localStorage.setItem('slicegate_user',j.username);
+      localStorage.setItem('slicegate_role',j.role);
       await refresh();
     }
-    function logout(){token.value='';user.value='';localStorage.removeItem('slicegate_token');localStorage.removeItem('slicegate_user');}
+    function logout(){token.value='';user.value='';role.value='';
+      ['slicegate_token','slicegate_user','slicegate_role'].forEach(k=>localStorage.removeItem(k));}
     async function loadJson(url){
       const r=await fetch(url,{headers:auth()});
       const j=await r.json().catch(()=>({}));
@@ -81,17 +97,65 @@ createApp({
       if(!token.value) return;
       const s=await loadJson('/api/slices'); if(s===null) return;
       slices.value=Array.isArray(s.items)?s.items:[];
+      const q=await loadJson('/api/requests'); if(q===null) return;
+      requests.value=Array.isArray(q.items)?q.items:[];
+      boundary.value=q.credential_boundary||'';
       const rel=await loadJson('/api/releases'); if(rel===null) return;
       releases.value=Array.isArray(rel.items)?rel.items:[];
       const w=await loadJson('/api/watermarks'); if(w===null) return;
       watermarks.value=Array.isArray(w.items)?w.items:[];
-      if(slices.value.length) releaseSliceId.value=slices.value[0].id;
+      const p=await loadJson('/api/permissions'); if(p===null) return;
+      perms.value=Array.isArray(p.items)?p.items:[];
+      const ct=await loadJson('/api/contention'); if(ct===null) return;
+      contentions.value=Array.isArray(ct.items)?ct.items:[];
+      if(slices.value.length) reqSliceId.value=slices.value[0].id;
     }
     async function createSlice(){actionErr.value='';const r=await fetch('/api/slices',{method:'POST',headers:auth(),body:JSON.stringify(form.value)});const j=await r.json();if(!r.ok)actionErr.value=j.detail||'失败';await refresh();}
     async function evaluate(id){await fetch('/api/slices/'+id+'/evaluate',{method:'POST',headers:auth()});await refresh();}
-    async function doRelease(){actionErr.value='';const r=await fetch('/api/slices/'+releaseSliceId.value+'/release',{method:'POST',headers:auth(),body:JSON.stringify({consumer:consumer.value})});const j=await r.json();if(!r.ok)actionErr.value=j.detail||'放行失败';await refresh();}
+    async function createRequest(){
+      actionErr.value='';
+      const r=await fetch('/api/requests',{method:'POST',headers:auth(),body:JSON.stringify({slice_id:reqSliceId.value,consumer:reqConsumer.value})});
+      const j=await r.json();if(!r.ok){actionErr.value=j.detail||'提交失败';return;}
+      actionErr.value='申请单 '+j.request_no+' 已登记，口径：'+j.credential_kind+'，'+j.credential_effect;
+      await refresh();
+    }
+    async function approve(id){
+      actionErr.value='';
+      const r=await fetch('/api/requests/'+id+'/approve',{method:'POST',headers:auth()});
+      const j=await r.json();if(!r.ok){actionErr.value=j.detail||'审批失败';return;}
+      actionErr.value='审批通过：申请单 '+j.request_no+'（'+j.request_credential_kind+'）→ 服务端事务签发正式放行单号 '+j.release_no;
+      await refresh();
+    }
+    async function reject(id){
+      actionErr.value='';
+      const r=await fetch('/api/requests/'+id+'/reject',{method:'POST',headers:auth()});
+      const j=await r.json();if(!r.ok){actionErr.value=j.detail||'驳回失败';return;}
+      actionErr.value='申请单 '+j.request_no+' 已驳回，仍为'+j.credential_kind+'，未产生任何放行效力';
+      await refresh();
+    }
+    async function directRelease(){
+      if(!isAdmin.value){actionErr.value='凭证口径偏了：只读令牌不得写正式放行；申请单属非放行凭证。';return;}
+      actionErr.value='';
+      const r=await fetch('/api/slices/'+reqSliceId.value+'/release',{method:'POST',headers:auth(),body:JSON.stringify({consumer:consumer.value})});
+      const j=await r.json();if(!r.ok){actionErr.value=j.detail||'放行失败';return;}
+      actionErr.value='正式放行已写入，放行单号 '+j.release_no+'（'+j.credential_kind+'）';
+      await refresh();
+    }
+    function download(url){
+      fetch(url,{headers:auth()}).then(r=>{
+        if(!r.ok) return r.json().then(j=>{actionErr.value=j.detail||'导出失败';});
+        return r.blob().then(b=>{
+          const a=document.createElement('a');
+          a.href=URL.createObjectURL(b); a.download=url.includes('requests')?'release_requests_non_credential.csv':'releases_formal_credential.csv';
+          a.click(); URL.revokeObjectURL(a.href);
+        });
+      });
+    }
     onMounted(()=>{if(token.value)refresh();});
-    return {token,user,username,password,err,tab,nav,slices,releases,watermarks,form,releaseSliceId,consumer,actionErr,completeCnt,openCnt,login,logout,createSlice,evaluate,doRelease};
+    return {token,user,role,isAdmin,username,password,err,tab,nav,boundary,slices,releases,watermarks,
+      requests,perms,contentions,form,reqSliceId,reqConsumer,consumer,actionErr,
+      completeCnt,openCnt,pendingCnt,NON_CREDENTIAL,FORMAL_CREDENTIAL,
+      login,logout,createSlice,evaluate,createRequest,approve,reject,directRelease,download};
   },
   template:`
   <div v-if="!token" class="login">
@@ -101,16 +165,19 @@ createApp({
   </div>
   <div v-if="token">
     <div class="top">
-      <div class="brand">日切放行<small>切片 → 完整度 → 放行 → 水位</small></div>
+      <div class="brand">日切放行<small>切片 → 完整度 → 申请/审批 → 正式放行 → 水位</small></div>
       <div class="tabs"><button v-for="(n,i) in nav" :key="n" :class="{on:tab===i}" @click="tab=i">{{n}}</button></div>
-      <div class="user">{{user}}</div><button class="ghost" @click="logout">退出</button>
+      <div class="user">{{user}}<span class="rolechip">{{role}}</span></div><button class="ghost" @click="logout">退出</button>
     </div>
     <main>
       <div class="kpi">
         <div class="panel">切片总数<b class="mono">{{slices.length}}</b></div>
         <div class="panel">已完整<b class="mono">{{completeCnt}}</b></div>
         <div class="panel">未放行<b class="mono">{{openCnt}}</b></div>
+        <div class="panel">待审批申请单<b class="mono">{{pendingCnt}}</b></div>
       </div>
+      <div class="note">凭证边界：{{boundary}}</div>
+
       <div v-show="tab===0" class="grid">
         <div class="panel">
           <h2>在途切片</h2>
@@ -131,6 +198,7 @@ createApp({
           <div class="err">{{actionErr}}</div>
         </div>
       </div>
+
       <div v-show="tab===1" class="panel">
         <h2>完整度裁决</h2>
         <table><thead><tr><th>切片</th><th>缺口</th><th>结论</th><th>放行态</th></tr></thead>
@@ -139,24 +207,112 @@ createApp({
           <td>{{s.completeness}}</td><td>{{s.release_status}}</td>
         </tr></tbody></table>
       </div>
+
       <div v-show="tab===2" class="grid">
         <div class="panel">
-          <h2>申请放行</h2>
-          <label>切片</label><select v-model.number="releaseSliceId"><option v-for="s in slices" :value="s.id">{{s.slice_no}}（{{s.completeness}}）</option></select>
-          <label>下游</label><input v-model="consumer"/>
-          <button class="primary" @click="doRelease">放行</button>
+          <h2>提交放行申请<span class="tag noncred" style="margin-left:8px">{{NON_CREDENTIAL}}</span></h2>
+          <label>切片</label><select v-model.number="reqSliceId"><option v-for="s in slices" :value="s.id">{{s.slice_no}}（{{s.completeness}}）</option></select>
+          <label>下游</label><input v-model="reqConsumer"/>
+          <button class="primary" @click="createRequest">提交申请单（不改放行态/水位）</button>
+          <div class="side">申请单全状态只读：不会改切片放行态、不写成功流水、不推消费水位；申请单号 REQ 不得顶替放行单号 REL。</div>
           <div class="err">{{actionErr}}</div>
         </div>
         <div class="panel">
-          <h2>放行流水</h2>
-          <table><thead><tr><th>切片</th><th>下游</th><th>结果</th><th>时间</th></tr></thead>
-          <tbody><tr v-for="r in releases" :key="r.id"><td class="mono">{{r.slice_no}}</td><td>{{r.consumer}}</td><td>{{r.status}}</td><td class="mono">{{r.created_at}}</td></tr></tbody></table>
+          <h2>申请台<span class="tag noncred" style="margin-left:8px">{{NON_CREDENTIAL}}</span></h2>
+          <table><thead><tr><th>申请单号</th><th>切片</th><th>申请人/角色</th><th>状态</th><th>口径</th><th>旁注</th></tr></thead>
+          <tbody><tr v-for="q in requests" :key="q.id">
+            <td class="mono">{{q.request_no}}</td><td class="mono">{{q.slice_no}}</td>
+            <td>{{q.applicant}} / {{q.applicant_role}}</td>
+            <td><span class="tag" :class="{bad:q.status==='审批驳回',warn:q.status==='待审批'}">{{q.status}}</span></td>
+            <td><span class="tag noncred">{{q.credential_kind}}</span></td>
+            <td><button class="ghost" @click="actionErr=q.boundary_note">凭证边界说明</button></td>
+          </tr></tbody></table>
         </div>
       </div>
-      <div v-show="tab===3" class="panel">
-        <h2>消费水位</h2>
-        <table><thead><tr><th>消费方</th><th>业务日</th><th>水位</th><th>来源切片</th></tr></thead>
-        <tbody><tr v-for="w in watermarks" :key="w.id"><td>{{w.consumer}}</td><td>{{w.biz_date}}</td><td class="mono">{{w.watermark}}</td><td class="mono">{{w.source_slice}}</td></tr></tbody></table>
+
+      <div v-show="tab===3" class="grid">
+        <div class="panel">
+          <h2>审批裁决（仅管理员）</h2>
+          <table><thead><tr><th>申请单号</th><th>切片/完整度</th><th>下游</th><th>状态</th><th>操作</th></tr></thead>
+          <tbody><tr v-for="q in requests" :key="'a'+q.id">
+            <td class="mono">{{q.request_no}}<br/><span class="tag noncred">{{q.credential_kind}}</span></td>
+            <td class="mono">{{q.slice_no}}<br/>{{q.slice_completeness}} / {{q.slice_release_status}}</td>
+            <td>{{q.consumer}}</td><td>{{q.status}}<div class="side" v-if="q.decided_by">{{q.decided_by}} · {{q.decided_at}}</div></td>
+            <td>
+              <button class="ghost" :disabled="!isAdmin||q.status!=='待审批'" @click="approve(q.id)">审批通过并放行</button>
+              <button class="ghost" :disabled="!isAdmin||q.status!=='待审批'" @click="reject(q.id)">驳回</button>
+            </td>
+          </tr></tbody></table>
+          <div class="side" v-if="!isAdmin">只读角色：审批与放行写入口已由服务端按角色拦截，按钮仅作置灰展示。</div>
+          <div class="err">{{actionErr}}</div>
+        </div>
+        <div class="panel">
+          <h2>凭证争用记录</h2>
+          <table><thead><tr><th>申请单</th><th>胜方</th><th>后手</th><th>动作</th><th>说明/时间</th></tr></thead>
+          <tbody><tr v-for="x in contentions" :key="x.id">
+            <td class="mono">{{x.request_no}}</td><td>{{x.winner}}</td>
+            <td>{{x.loser}}（{{x.loser_role}}）</td><td>{{x.loser_action}}</td>
+            <td>{{x.detail}}<div class="mono side">{{x.created_at}}</div></td>
+          </tr>
+          <tr v-if="!contentions.length"><td colspan="5" class="side">暂无争用：审批入口与放行写入口抢同一申请单时按角色裁决，后手在此留痕。</td></tr></tbody></table>
+        </div>
+      </div>
+
+      <div v-show="tab===4" class="grid">
+        <div class="panel" v-if="isAdmin">
+          <h2>放行写入口（管理员）</h2>
+          <label>切片</label><select v-model.number="reqSliceId"><option v-for="s in slices" :value="s.id">{{s.slice_no}}（{{s.completeness}}）</option></select>
+          <label>下游</label><input v-model="consumer"/>
+          <button class="primary" @click="directRelease">写正式放行（服务端事务）</button>
+          <div class="side">放行单号由服务端以 REL 签发；持申请单号(REQ)调用本入口将被拦截并回“凭证口径偏了”。</div>
+          <div class="err">{{actionErr}}</div>
+        </div>
+        <div class="panel" v-else>
+          <h2>放行写入口</h2>
+          <div class="note">凭证口径偏了：当前为只读令牌，禁止写正式放行、改放行态或推水位。申请单属{{NON_CREDENTIAL}}，不构成放行依据。</div>
+        </div>
+        <div class="panel" :class="{'grid-full':!isAdmin}" style="grid-column:1/-1">
+          <h2>成功流水（仅认正式放行凭证）</h2>
+          <table><thead><tr><th>放行单号</th><th>切片</th><th>下游</th><th>结果</th><th>口径</th><th>时间</th></tr></thead>
+          <tbody><tr v-for="r in releases" :key="r.id">
+            <td class="mono">{{r.release_no}}</td><td class="mono">{{r.slice_no}}</td><td>{{r.consumer}}</td>
+            <td><span class="tag" :class="{bad:r.status!=='成功'}">{{r.status}}</span></td>
+            <td><span class="tag" :class="{'noncred':r.credential_kind!==FORMAL_CREDENTIAL}">{{r.credential_kind}}</span></td>
+            <td class="mono">{{r.created_at}}</td>
+          </tr></tbody></table>
+          <div class="side">流水只登记服务端 REL 放行单号；申请单号 REQ 不出现在放行单号列，两号不得混同。</div>
+        </div>
+      </div>
+
+      <div v-show="tab===5" class="panel">
+        <h2>消费水位（仅由正式放行事务推出）</h2>
+        <table><thead><tr><th>消费方</th><th>业务日</th><th>水位</th><th>来源切片</th><th>口径</th></tr></thead>
+        <tbody><tr v-for="w in watermarks" :key="w.id">
+          <td>{{w.consumer}}</td><td>{{w.biz_date}}</td><td class="mono">{{w.watermark}}</td>
+          <td class="mono">{{w.source_slice}}</td><td><span class="tag">{{w.credential_kind}}</span></td>
+        </tr></tbody></table>
+        <div class="side">只读令牌凭申请单推水位的链路已拆除：水位行只能随 REL 正式放行同事务写入。</div>
+      </div>
+
+      <div v-show="tab===6" class="grid">
+        <div class="panel">
+          <h2>权限列表（与服务端拦截互证）</h2>
+          <table><thead><tr><th>角色</th><th>提申请</th><th>审批</th><th>写放行</th><th>推水位</th><th>导出/查询</th></tr></thead>
+          <tbody><tr v-for="p in perms" :key="p.role">
+            <td>{{p.role}}</td>
+            <td>{{p.can_create_request?'允许':'禁止'}}</td>
+            <td><span class="tag" :class="{bad:!p.can_approve}">{{p.can_approve?'允许':'禁止'}}</span></td>
+            <td><span class="tag" :class="{bad:!p.can_write_release}">{{p.can_write_release?'允许':'禁止'}}</span></td>
+            <td><span class="tag" :class="{bad:!p.can_push_watermark}">{{p.can_push_watermark?'允许':'禁止'}}</span></td>
+            <td>{{p.can_export?'允许':'禁止'}}</td>
+          </tr></tbody></table>
+        </div>
+        <div class="panel">
+          <h2>导出页（带凭证口径列）</h2>
+          <button class="ghost" style="margin:6px 0" @click="download('/api/requests/export')">导出申请台 CSV（标注{{NON_CREDENTIAL}}）</button>
+          <button class="ghost" style="margin:6px 0" @click="download('/api/releases/export')">导出成功流水 CSV（标注{{FORMAL_CREDENTIAL}}）</button>
+          <div class="side">两份导出均带凭证口径列与效力说明；申请台导出不得被下游当作放行证明。</div>
+        </div>
       </div>
     </main>
   </div>`
